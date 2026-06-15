@@ -9,10 +9,28 @@ import { loadSpriteAtlas, loadCarFrames, loadTexture, loadTrafficAtlas, type Atl
 import { TrafficManager } from './game/traffic';
 import { Race, type GameMode } from './game/race';
 import { HUD_SPEED_FACTOR, MAX_OFFROAD_SPEED } from './game/constants';
+import type { MapColors } from './game/mapParser';
+import type { RGBA } from './gpu/polyRenderer';
 import { AudioManager } from './game/audio';
 import { DebugPanel, type DebugFlags } from './game/debugPanel';
 
 type AppState = 'title' | 'modeselect' | 'playing';
+
+function lerpRGBA(a: RGBA, b: RGBA, t: number): RGBA {
+  return [a[0]+(b[0]-a[0])*t, a[1]+(b[1]-a[1])*t, a[2]+(b[2]-a[2])*t, a[3]+(b[3]-a[3])*t];
+}
+function lerpColors(a: MapColors, b: MapColors, t: number): MapColors {
+  const L = (ca: RGBA, cb: RGBA) => lerpRGBA(ca, cb, t);
+  return {
+    sky: L(a.sky, b.sky),
+    sand1: L(a.sand1, b.sand1), sand2: L(a.sand2, b.sand2),
+    road1: L(a.road1, b.road1), road2: L(a.road2, b.road2),
+    rumble1: L(a.rumble1, b.rumble1), rumble2: L(a.rumble2, b.rumble2),
+    lane1: L(a.lane1, b.lane1), lane2: L(a.lane2, b.lane2),
+    rumbleLane1: L(a.rumbleLane1, b.rumbleLane1), rumbleLane2: L(a.rumbleLane2, b.rumbleLane2),
+  };
+}
+function smoothstep(x: number): number { return x * x * (3 - 2 * x); }
 
 const STEP = 1 / 60;
 // build stamp so a perf screenshot maps to a moment in code state
@@ -72,16 +90,17 @@ async function main() {
     vx: (Math.random() - 0.5) * 0.00018,
     alpha: 0.35 + Math.random() * 0.55,
   }));
-  function tickWeather(active: boolean) {
+  function tickWeather(active: boolean, fadeOut = 0) {
     const W = window.innerWidth, H = window.innerHeight;
     if (weatherCanvas.width !== W || weatherCanvas.height !== H) { weatherCanvas.width = W; weatherCanvas.height = H; }
     weatherCtx.clearRect(0, 0, W, H);
     if (!active) return;
+    const opacity = Math.max(0, 1 - fadeOut);
     for (const f of snowFlakes) {
       f.y += f.vy; f.x += f.vx;
       if (f.y > 1.04) { f.y = -0.02; f.x = Math.random(); }
       if (f.x < 0) f.x += 1; if (f.x > 1) f.x -= 1;
-      weatherCtx.globalAlpha = f.alpha;
+      weatherCtx.globalAlpha = f.alpha * opacity;
       weatherCtx.beginPath();
       weatherCtx.arc(f.x * W, f.y * H, f.r, 0, Math.PI * 2);
       weatherCtx.fillStyle = '#ddeeff';
@@ -579,7 +598,7 @@ async function main() {
     }),
   };
 
-  function drawBackground(g: Gpu, horizon: number) {
+  function drawBackground(g: Gpu, horizon: number, nextSt?: Stage | null, transitionT = 0) {
     // Transparent horizon strips (clouds / sea), bottom anchored at the ACTUAL
     // road horizon (returned by track.render) so they meet the road on hills,
     // not float over it. Alpha-blended over the sky; scroll with curve.
@@ -589,6 +608,11 @@ async function main() {
     sprite.quad(bgBack, 0, horizon - g.height * 0.30, g.width, g.height * 0.30, bgScroll * 0.4, 0, bgScroll * 0.4 + 1, 1);
     // front sea + islands: nearer, shorter, faster
     sprite.quad(bgFront, 0, horizon - g.height * 0.12, g.width, g.height * 0.12, bgScroll * 0.8, 0, bgScroll * 0.8 + 1, 1);
+    // Cross-fade in next stage's background during zone transition
+    if (nextSt && transitionT > 0) {
+      sprite.quad(nextSt.bgBack,  0, horizon - g.height * 0.30, g.width, g.height * 0.30, bgScroll * 0.4, 0, bgScroll * 0.4 + 1, 1, false, transitionT);
+      sprite.quad(nextSt.bgFront, 0, horizon - g.height * 0.12, g.width, g.height * 0.12, bgScroll * 0.8, 0, bgScroll * 0.8 + 1, 1, false, transitionT);
+    }
   }
 
   function drawCar(g: Gpu) {
@@ -731,10 +755,20 @@ async function main() {
 
     if (resize(gpu)) gpu.context.configure({ device: gpu.device, format: gpu.format, alphaMode: 'opaque' });
 
+    // Zone transition: lerp colors + cross-fade backgrounds starting at 70% of stage
+    const stageProgress = track.length > 0 ? player.position / track.length : 0;
+    const rawT = Math.max(0, Math.min(1, (stageProgress - 0.7) / 0.3));
+    const transitionT = smoothstep(rawT);
+    const nextStageForTransition = transitionT > 0
+      ? ((forkChoice === 'right' ? stageIdx + 2 : stageIdx + 1) % stages.length)
+      : -1;
+    const nextSt = nextStageForTransition >= 0 ? stages[nextStageForTransition] : null;
+    const blendedColors = nextSt ? lerpColors(stage.track.map.colors, nextSt.track.map.colors, transitionT) : undefined;
+
     poly.begin();
     sprite.begin();
-    const horizon = track.render(poly, sprite, player.posX, player.position, player.posY, gpu.width, gpu.height, traffic.byLine(track), trafficAtlas);
-    drawBackground(gpu, horizon);
+    const horizon = track.render(poly, sprite, player.posX, player.position, player.posY, gpu.width, gpu.height, traffic.byLine(track), trafficAtlas, blendedColors);
+    drawBackground(gpu, horizon, nextSt, transitionT);
     drawCar(gpu);
     sprite.upload();
 
@@ -744,8 +778,11 @@ async function main() {
       colorAttachments: [{ view, clearValue: { r: 0, g: 0, b: 0, a: 1 }, loadOp: 'clear', storeOp: 'store' }],
     });
     const startTexArr = startAtlas ? [startAtlas.texture] : [];
-    poly.flush(pass);                       // sky + road
-    sprite.flush(pass, [bgBack, bgFront]);  // transparent horizon strips over sky
+    poly.flush(pass);                       // sky + road (lerped colors applied)
+    // Backgrounds: current at full alpha, next stage fading in during transition
+    const bgTextures: typeof bgBack[] = [bgBack, bgFront];
+    if (nextSt) bgTextures.push(nextSt.bgBack, nextSt.bgFront);
+    sprite.flush(pass, bgTextures);
     sprite.flush(pass, [...startTexArr, scenery.texture, trafficAtlas.texture, car.texture]); // start gantry, scenery, traffic, player
     pass.end();
     gpu.device.queue.submit([encoder.finish()]);
@@ -754,7 +791,7 @@ async function main() {
     if (fpsT >= 0.5) { fps = Math.round(frames / fpsT); frames = 0; fpsT = 0; }
     updateHud();
     updateMenu();
-    tickWeather(appState === 'playing' && track.map.terrain === 3);
+    tickWeather(appState === 'playing' && track.map.terrain === 3, transitionT);
     panel.update();
     if (perf) {
       perf.tick(now);

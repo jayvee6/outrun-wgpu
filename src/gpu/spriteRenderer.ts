@@ -5,25 +5,27 @@
 
 import type { Gpu } from './device';
 
-const FLOATS_PER_VERT = 4; // x, y, u, v
+const FLOATS_PER_VERT = 5; // x, y, u, v, a
 const VERTS_PER_QUAD = 6;
 
 const WGSL = /* wgsl */ `
-struct VSOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f };
+struct VSOut { @builtin(position) pos: vec4f, @location(0) uv: vec2f, @location(1) a: f32 };
 @group(0) @binding(0) var<uniform> viewport: vec2f;
 @group(1) @binding(0) var samp: sampler;
 @group(1) @binding(1) var tex: texture_2d<f32>;
 
-@vertex fn vs(@location(0) p: vec2f, @location(1) uv: vec2f) -> VSOut {
+@vertex fn vs(@location(0) p: vec2f, @location(1) uv: vec2f, @location(2) a: f32) -> VSOut {
   var out: VSOut;
   out.pos = vec4f(p.x / viewport.x * 2.0 - 1.0, 1.0 - p.y / viewport.y * 2.0, 0.0, 1.0);
   out.uv = uv;
+  out.a = a;
   return out;
 }
 @fragment fn fs(in: VSOut) -> @location(0) vec4f {
   let c = textureSample(tex, samp, in.uv);
-  if (c.a < 0.01) { discard; }
-  return c;
+  let fa = c.a * in.a;
+  if (fa < 0.01) { discard; }
+  return vec4f(c.rgb, fa);
 }
 `;
 
@@ -78,6 +80,7 @@ export class SpriteRenderer {
           attributes: [
             { shaderLocation: 0, offset: 0, format: 'float32x2' },
             { shaderLocation: 1, offset: 8, format: 'float32x2' },
+            { shaderLocation: 2, offset: 16, format: 'float32' },
           ],
         }],
       },
@@ -135,16 +138,16 @@ export class SpriteRenderer {
 
   begin() { this.batches.clear(); this.uploaded = []; }
 
-  /** Queue a quad. x,y = top-left in pixels; uv rect in [0,1]; flipX mirrors U. */
+  /** Queue a quad. x,y = top-left in pixels; uv rect in [0,1]; flipX mirrors U; alpha multiplies texture opacity. */
   quad(t: SpriteTexture, x: number, y: number, w: number, h: number,
-       u0 = 0, v0 = 0, u1 = 1, v1 = 1, flipX = false) {
+       u0 = 0, v0 = 0, u1 = 1, v1 = 1, flipX = false, alpha = 1) {
     if (flipX) { const tmp = u0; u0 = u1; u1 = tmp; }
     let arr = this.batches.get(t.id);
     if (!arr) { arr = []; this.batches.set(t.id, arr); }
     const x1 = x + w, y1 = y + h;
     arr.push(
-      x, y, u0, v0,  x1, y, u1, v0,  x1, y1, u1, v1,
-      x, y, u0, v0,  x1, y1, u1, v1,  x, y1, u0, v1,
+      x, y, u0, v0, alpha,  x1, y, u1, v0, alpha,  x1, y1, u1, v1, alpha,
+      x, y, u0, v0, alpha,  x1, y1, u1, v1, alpha,  x, y1, u0, v1, alpha,
     );
   }
 

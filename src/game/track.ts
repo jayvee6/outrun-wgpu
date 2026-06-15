@@ -7,7 +7,7 @@ import { PolyRenderer, type RGBA } from '../gpu/polyRenderer';
 import { SpriteRenderer, type SpriteTexture } from '../gpu/spriteRenderer';
 import type { Atlas, TrafficAtlas } from './assets';
 import type { TrafficCar } from './traffic';
-import { MapData, SpritePlacement } from './mapParser';
+import { MapData, SpritePlacement, type MapColors } from './mapParser';
 import { ROAD_WIDTH, CAMERA_DISTANCE, CAMERA_HEIGHT, SCREEN_Y_OFFSET, SEGMENT_LENGTH, DRAW_DISTANCE } from './constants';
 
 interface Proj { x: number; y: number; w: number; scale: number; cz: number; }
@@ -108,14 +108,15 @@ export class Track {
 
   /** Render road + scenery (+ optional traffic). Returns the horizon screen-Y. */
   render(poly: PolyRenderer, sprite: SpriteRenderer, playerX: number, position: number, posY: number, w: number, h: number,
-         trafficByLine?: Map<number, TrafficCar[]>, trafficAtlas?: TrafficAtlas): number {
+         trafficByLine?: Map<number, TrafficCar[]>, trafficAtlas?: TrafficAtlas,
+         colorsOverride?: MapColors): number {
     const segs = this.map.segments;
     const N = segs.length;
     const base = this.segmentAt(position);
     const basePct = (position % SEGMENT_LENGTH) / SEGMENT_LENGTH;
     const camHeight = CAMERA_HEIGHT + posY;
     const mapDistance = base.distance;
-    const C = this.map.colors;
+    const C = colorsOverride ?? this.map.colors;
     this.spriteQueue.length = 0;
 
     // sky
