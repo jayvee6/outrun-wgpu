@@ -336,9 +336,10 @@ async function main() {
   // ---------------------------------------------------------------------------
 
   function autopilotInput(p: typeof player, seg: { curve: number }) {
-    // Steer signal: + = car too far right or right curve ahead → steer left
-    const signal = p.posX * 1.2 + seg.curve * 2.0;
-    return { accel: !p.crashing, brake: false, left: signal > 0.18, right: signal < -0.18 };
+    // Primary goal: return posX to 0 (center). Curve feed-forward is intentionally
+    // weak — a large curve term fights recovery when the car is already off-road.
+    const signal = p.posX * 3.0 - seg.curve * 0.4;
+    return { accel: !p.crashing, brake: false, left: signal > 0.08, right: signal < -0.08 };
   }
 
   interface SimResult {
@@ -408,7 +409,13 @@ async function main() {
         player.speed = 180; player.invuln = 99999; // isolate geometry, not traffic
         // Budget for worst-case: car spends the whole stage at offroad speed (75 u/step)
         const stepsNeeded = Math.ceil(track.length / MAX_OFFROAD_SPEED) + 500;
-        const r = stepSim(stepsNeeded);
+        // Fork-aware driver: block rightward steer in the fork zone so forkChoice
+        // stays 'left' (stage+1). Without this the autopilot drifts right, locks
+        // forkChoice='right' (+2), and the delta wraps back to 0.
+        const r = stepSim(stepsNeeded, (p, seg) => {
+          const signal = p.posX * 3.0 - seg.curve * 0.4;
+          return { accel: true, brake: false, left: signal > 0.08 || forkActive, right: !forkActive && signal < -0.08 };
+        });
         return { pass: r.stagesAdvanced >= 1, ...r };
       }
       case 'gameover_flow': {
