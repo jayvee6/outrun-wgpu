@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OutRun · WebGPU</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; height: 100%; background: #000; overflow: hidden;
+        font-family: "Arial Black", Impact, system-ui, sans-serif; }
+      #app { position: fixed; inset: 0; display: grid; place-items: center; }
+      canvas { width: 100vw; height: 100vh; display: block; image-rendering: pixelated; }
+
+      /* --- OutRun-style HUD --- */
+      #hud { position: fixed; inset: 0; pointer-events: none; font-weight: 900;
+        letter-spacing: 1px; text-transform: uppercase; }
+      .hud-label { font-size: 14px; opacity: 0.95; }
+      .hud-shadow { text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 0 0 6px rgba(0,0,0,.6); }
+      #hud-top { position: absolute; top: 14px; left: 0; right: 0;
+        display: flex; justify-content: space-between; align-items: flex-start; padding: 0 22px; }
+      #hud-stage { color: #ff4da6; }
+      #hud-time-wrap { text-align: center; color: #ffe14d; }
+      #hud-time { font-size: 46px; line-height: 0.9; }
+      #hud-score-wrap { text-align: right; color: #9df44b; }
+      #hud-score { font-size: 26px; }
+      #hud-speed-wrap { position: absolute; left: 22px; bottom: 16px; color: #ff5b4d; }
+      #hud-speed { font-size: 52px; line-height: 0.8; }
+      #hud-speed .unit { font-size: 16px; color: #fff; margin-left: 6px; }
+      #hud-help { position: absolute; right: 22px; bottom: 18px; color: #cfe9ff;
+        font-size: 12px; font-weight: 700; opacity: 0.8; text-align: right; }
+      #hud-center { position: absolute; inset: 0; display: grid; place-items: center; }
+      #hud-msg { font-size: 120px; color: #fff; opacity: 0; transition: opacity .15s;
+        text-align: center;
+        text-shadow: 4px 4px 0 #000, 0 0 24px rgba(255,255,255,.4); }
+      #hud-msg.show { opacity: 1; }
+      #hud-msg.cp { font-size: 64px; color: #ffe14d; }
+      #hud-msg.over { font-size: 84px; color: #ff5b4d; }
+      @keyframes blink { 50% { opacity: 0.25; } }
+      #hud-msg.blink { animation: blink .5s steps(1) infinite; }
+
+      #err { position: fixed; inset: 0; display: none; place-items: center; color: #f8332d;
+        font-size: 16px; padding: 2rem; text-align: center; font-family: monospace; white-space: pre-wrap; }
+
+      /* --- Title / mode-select overlay --- */
+      #menu-overlay { position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; pointer-events: none;
+        background: linear-gradient(to bottom, rgba(0,0,0,.55) 0%, rgba(0,0,0,.3) 60%, rgba(0,0,0,.0) 100%);
+        transition: opacity .25s; }
+      #menu-overlay.hidden { opacity: 0; }
+
+      /* wordmark */
+      #menu-title { font-size: clamp(72px, 12vw, 128px); font-weight: 900; line-height: 1;
+        letter-spacing: -2px; text-transform: uppercase;
+        color: #fff; text-shadow: 6px 6px 0 #e8141c, 12px 12px 0 #000, 0 0 40px rgba(255,80,0,.6);
+        margin-bottom: 0; }
+      #menu-sub { font-size: clamp(14px, 2.2vw, 22px); color: #ffe14d; letter-spacing: 6px;
+        text-shadow: 2px 2px 0 #000; margin-bottom: 6vh; }
+
+      /* prompt / mode list */
+      #menu-prompt { font-size: clamp(14px, 2vw, 20px); color: #cfe9ff; letter-spacing: 3px;
+        text-shadow: 2px 2px 0 #000; }
+      #menu-prompt.blink { animation: blink .7s steps(1) infinite; }
+
+      #menu-modes { display: none; flex-direction: column; gap: 10px; margin-top: 4vh; }
+      #menu-modes.visible { display: flex; }
+      .menu-mode { font-size: clamp(16px, 2.4vw, 26px); color: #aad4ff; letter-spacing: 3px;
+        text-shadow: 2px 2px 0 #000; padding: 6px 28px; border: 2px solid transparent;
+        transition: color .12s, border-color .12s; cursor: default; text-align: center; }
+      .menu-mode.selected { color: #fff200; border-color: #fff200;
+        text-shadow: 0 0 12px #fff200, 2px 2px 0 #000; }
+      #menu-mode-desc { font-size: clamp(11px, 1.4vw, 15px); color: #8bbcda; letter-spacing: 2px;
+        text-shadow: 1px 1px 0 #000; margin-top: 12px; height: 1.4em; }
+    </style>
+  </head>
+  <body>
+    <div id="app"><canvas id="gfx"></canvas></div>
+    <!-- Title / mode-select overlay — JS drives visibility via .hidden class -->
+    <div id="menu-overlay">
+      <div id="menu-title">OUT RUN</div>
+      <div id="menu-sub">WebGPU</div>
+      <div id="menu-prompt" class="blink">PRESS ENTER / SPACE TO START</div>
+      <div id="menu-modes">
+        <div class="menu-mode selected" data-mode="original">ORIGINAL</div>
+        <div class="menu-mode" data-mode="continuous">CONTINUOUS</div>
+        <div class="menu-mode" data-mode="survival">SURVIVAL</div>
+      </div>
+      <div id="menu-mode-desc"></div>
+    </div>
+
+    <div id="hud">
+      <div id="hud-top">
+        <div id="hud-stage"><div class="hud-label hud-shadow">Stage</div><div class="hud-shadow" id="hud-stage-n" style="font-size:26px">1</div></div>
+        <div id="hud-time-wrap"><div class="hud-label hud-shadow">Time</div><div id="hud-time" class="hud-shadow">--</div></div>
+        <div id="hud-score-wrap"><div class="hud-label hud-shadow">Score</div><div id="hud-score" class="hud-shadow">0</div></div>
+      </div>
+      <div id="hud-speed-wrap"><div id="hud-speed" class="hud-shadow"><span id="hud-speed-n">0</span><span class="unit">km/h</span></div></div>
+      <div id="hud-help">↑/W accel · ↓/S brake · ←→ steer</div>
+      <div id="hud-center"><div id="hud-msg"></div></div>
+    </div>
+    <div id="err"></div>
+    <!-- Studio Joe perf-instrumentation HUD (classic script → window.SJHud) -->
+    <script src="/sjhud.js"></script>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
