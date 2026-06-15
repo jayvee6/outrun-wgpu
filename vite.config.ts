@@ -5,6 +5,7 @@ import { writeFileSync } from 'node:fs';
 // they land on disk, so headless verification can Read the rendered frame
 // without piping a huge base64 string back through the eval channel.
 export default defineConfig({
+  server: { port: 5210, host: true, strictPort: true },
   plugins: [
     {
       name: 'outrun-shot-sink',
